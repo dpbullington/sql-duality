@@ -1,0 +1,33 @@
+<Project>
+
+  <!--
+    Common build settings for every project in the SqlDuality solution.
+    Keep this the single source of truth for language/runtime/AOT policy.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>9999</WarningLevel>
+
+    <!-- Pure-managed / AOT + trimming friendly posture. Enforced on library projects
+         (tests opt out below) so we catch trim/AOT hazards at build time. -->
+    <IsAotFriendlyProject Condition="'$(IsAotFriendlyProject)' == ''">true</IsAotFriendlyProject>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Encourage XML docs (doc file is generated) but don't fail the build for undocumented
+         trivial members such as operator overloads or ToString. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsAotFriendlyProject)' == 'true'">
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+  </PropertyGroup>
+
+</Project>

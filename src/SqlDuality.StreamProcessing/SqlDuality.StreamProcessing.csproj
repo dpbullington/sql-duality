@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlDuality.StreamProcessing</RootNamespace>
+    <AssemblyName>SqlDuality.StreamProcessing</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqlDuality.Core\SqlDuality.Core.csproj" />
+  </ItemGroup>
+
+</Project>

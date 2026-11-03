@@ -1,0 +1,21 @@
+## .NET build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+## Test results
+TestResults/
+*.trx
+*.coverage
+
+## IDE / OS
+.vs/
+.idea/
+*.user
+.DS_Store
+
+## Local scratch data dirs produced by tests / samples
+*.sqld/
+scratch/

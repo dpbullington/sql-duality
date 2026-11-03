@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SqlDuality.Api/SqlDuality.Api.csproj" />
+    <Project Path="src/SqlDuality.Core/SqlDuality.Core.csproj" />
+    <Project Path="src/SqlDuality.StreamProcessing/SqlDuality.StreamProcessing.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SqlDuality.Tests/SqlDuality.Tests.csproj" />
+  </Folder>
+</Solution>
