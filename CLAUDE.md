@@ -8,7 +8,8 @@ SqlDuality is a pure-managed embedded database engine for .NET 10 whose organizi
 **"the durable log is the source of truth; all queryable state is a derived projection of it."**
 Internalize that before changing anything — it is what distinguishes this design from a conventional
 B-tree + WAL database, and most architectural decisions follow from it. Read `ARCHITECTURE.md` first;
-it is the single best orientation. The project is in **Phase 1 (Foundation)**.
+it is the single best orientation. **Phase 1 (foundation) and Phase 2 (concurrent-writer MVCC + GC)
+are done**; the SQL engine, range scans, and secondary/vector indexes are Phase 3+.
 
 ## Commands
 
@@ -46,11 +47,16 @@ If a change touches the log, storage, or recovery, correctness under crash/power
 performance and elegance. The invariants that recovery depends on:
 
 - **One committed transaction = one `Transaction` log record** (a serialized `MutationBatch`).
-  Atomicity relies on the single-record CRC frame — do not split a transaction across records in
-  Phase 1, or you reintroduce the need for commit markers.
+  Atomicity relies on the single-record CRC frame — do not split a transaction across records, or you
+  reintroduce the need for commit markers.
 - **Visibility follows the fsync.** The writer loop publishes a batch (advances the durable
   `NextLsn`, signals followers) only *after* the flush, so readers never see non-durable data. Keep
   it that way.
+- **The memtable is projected by the log writer, not by committers.** `DurableLog` invokes the
+  `onRecordDurable` callback (wired to `KeyValueStore.ApplyDurableRecord`) per record in LSN order
+  during the publish phase. This is why version chains are ordered without a per-key lock. Every log
+  append must flow through the commit path so the predicted commit LSN matches the log's assigned LSN
+  (`CommitAsync` asserts this) — do not add a second, independent appender.
 - **Recovery stops at the first bad record.** A truncated tail or CRC failure ends the valid log and
   the segment is physically truncated. If you change the frame format, bump `FormatVersion` and keep
   the "unknown version ⇒ treat as end of log" behavior.
@@ -72,10 +78,12 @@ Dependency direction: `Api` → (`Core`, `StreamProcessing`) → `Core`. Nothing
   (lock-free MVCC). `CheckpointFile` is the sorted on-disk snapshot that lets the log truncate;
   recovery = load checkpoint + replay the log tail above it.
 - **`Core/Transactions`** — `Transaction` buffers writes, gives snapshot isolation + read-your-writes,
-  and commits with first-committer-wins conflict detection (`WriteConflictException`). **Phase 1
-  serializes the whole commit critical section under one gate** (conflict-check → append → apply), so
-  concurrent *writers* are serialized while *readers* are never blocked. Lock-free concurrent commit
-  is a Phase 2 goal — don't assume it exists.
+  and commits with first-committer-wins conflict detection (`WriteConflictException`). **Phase 2:
+  writers are concurrent.** `KeyValueStore.CommitAsync` holds a short, *I/O-free* oracle lock only to
+  validate the write set against the `_lastCommit` registry, enqueue the append, and claim the commit
+  LSN; the `fsync` happens outside the lock so concurrent commits batch. `Transaction.Begin` registers
+  its snapshot with `SnapshotTracker`; it is released on commit/abort/dispose (watermark for GC).
+  Blind auto-commit writes pass `Lsn.Max` to skip conflict detection.
 - **`StreamProcessing`** — one contract, `IStreamOperator<TIn,TOut>.ProcessAsync(source, ct)`, pull-
   based and composable (`Map`/`Filter`/`Then`). `LogStream` turns a `DurableLog` into the source;
   one-shot vs. continuous (follow-the-tail) is an `ExecutionMode`. SQL operators (future) implement

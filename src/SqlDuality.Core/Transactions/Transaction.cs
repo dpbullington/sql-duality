@@ -18,6 +18,7 @@ public sealed class Transaction : IDisposable
     private readonly List<Mutation> _buffer = new();
     private readonly Dictionary<byte[], int> _writeIndex = new(ByteKeyComparer.Instance); // key -> latest buffer slot
     private bool _completed;
+    private bool _snapshotReleased;
 
     internal Transaction(KeyValueStore store, Lsn readSnapshot)
     {
@@ -35,7 +36,10 @@ public sealed class Transaction : IDisposable
     public static Transaction Begin(KeyValueStore store)
     {
         ArgumentNullException.ThrowIfNull(store);
-        return new Transaction(store, store.Snapshot());
+        Lsn snapshot = store.Snapshot();
+        // Register the snapshot so garbage collection retains versions this transaction may still read.
+        store.RegisterSnapshot(snapshot);
+        return new Transaction(store, snapshot);
     }
 
     /// <summary>Reads a key, honoring this transaction's buffered writes then its read snapshot.</summary>
@@ -93,15 +97,36 @@ public sealed class Transaction : IDisposable
     {
         EnsureActive();
         _completed = true;
-        return await _store.CommitAsync(_buffer, ReadSnapshot, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _store.CommitAsync(_buffer, ReadSnapshot, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseSnapshot();
+        }
     }
 
     /// <summary>Abandons buffered writes.</summary>
     public void Abort()
     {
+        if (_completed)
+        {
+            return;
+        }
         _completed = true;
         _buffer.Clear();
         _writeIndex.Clear();
+        ReleaseSnapshot();
+    }
+
+    private void ReleaseSnapshot()
+    {
+        if (!_snapshotReleased)
+        {
+            _snapshotReleased = true;
+            _store.ReleaseSnapshot(ReadSnapshot);
+        }
     }
 
     private void EnsureActive()

@@ -17,6 +17,12 @@ public readonly record struct Lsn(ulong Value) : IComparable<Lsn>
     /// <summary>The first valid LSN a log will ever assign.</summary>
     public static readonly Lsn First = new(1);
 
+    /// <summary>
+    /// The maximum LSN. Used as a read snapshot to mean "nothing can be newer than this", i.e. an
+    /// unconditional (last-writer-wins) write that skips conflict detection.
+    /// </summary>
+    public static readonly Lsn Max = new(ulong.MaxValue);
+
     /// <summary>True for any assigned (non-sentinel) LSN.</summary>
     public bool IsValid => Value != 0;
 

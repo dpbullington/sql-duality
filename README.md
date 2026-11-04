@@ -6,10 +6,11 @@ collections, indexes, change feeds, and query results are projections derived fr
 
 No native dependencies, no P/Invoke — AOT- and trimming-friendly managed C#.
 
-> **Status: Phase 1 (Foundation).** The durable log, an MVCC key-value store, snapshot-isolated
-> transactions, change-data-capture, a stream-operator runtime, and a thin public API are implemented
-> and tested. The SQL engine, vector search, and concurrent-writer MVCC are later phases. See
-> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status: Phases 1–2 complete.** Phase 1: the durable log, an MVCC key-value store, snapshot-isolated
+> transactions, change-data-capture, a stream-operator runtime, and a thin public API. Phase 2:
+> concurrent-writer MVCC (group-commit batching, no single-writer gate), checkpoint-time version
+> garbage collection, and observability counters. The SQL engine, range scans, and vector search are
+> later phases. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Why
 

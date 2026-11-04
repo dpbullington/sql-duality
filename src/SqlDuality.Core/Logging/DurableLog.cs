@@ -53,10 +53,16 @@ public sealed class DurableLog : IAsyncDisposable
     private volatile Exception? _faultedWith;
     private int _disposed;
 
-    private DurableLog(string directory, LogOptions options)
+    // Invoked by the writer loop for each record, in strict LSN order, after the batch flush and
+    // before that record's append is acknowledged. This is how a materialized view (e.g. the
+    // key-value store) stays an exact, in-order projection of the durable log without re-reading it.
+    private readonly Action<LogRecord>? _onRecordDurable;
+
+    private DurableLog(string directory, LogOptions options, Action<LogRecord>? onRecordDurable)
     {
         _directory = directory;
         _options = options;
+        _onRecordDurable = onRecordDurable;
         _appendChannel = Channel.CreateUnbounded<PendingAppend>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -87,14 +93,24 @@ public sealed class DurableLog : IAsyncDisposable
     /// Opens (recovering if necessary) the durable log rooted at <paramref name="directory"/>,
     /// creating the directory if it does not exist.
     /// </summary>
+    /// <param name="directory">The directory to hold segment files.</param>
+    /// <param name="options">Durability tunables, or <c>null</c> for defaults.</param>
+    /// <param name="onRecordDurable">
+    /// Optional projection callback invoked for each record in LSN order once it is durable, before
+    /// its append is acknowledged. Must not block or throw; a throw faults the log.
+    /// </param>
+    /// <param name="cancellationToken">Cancels recovery.</param>
     public static async Task<DurableLog> OpenAsync(
-        string directory, LogOptions? options = null, CancellationToken cancellationToken = default)
+        string directory,
+        LogOptions? options = null,
+        Action<LogRecord>? onRecordDurable = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(directory);
         options ??= new LogOptions();
         Directory.CreateDirectory(directory);
 
-        var log = new DurableLog(directory, options);
+        var log = new DurableLog(directory, options, onRecordDurable);
         try
         {
             await Task.Run(() => log.Recover(cancellationToken), cancellationToken).ConfigureAwait(false);
@@ -114,6 +130,29 @@ public sealed class DurableLog : IAsyncDisposable
     public async ValueTask<Lsn> AppendAsync(
         LogRecordType type, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
     {
+        // Copy so the caller's buffer is not captured across the async boundary, then hand the copy off.
+        PendingAppend pending = EnqueueCore(type, payload.ToArray());
+        using (cancellationToken.UnsafeRegister(static s => ((PendingAppend)s!).TrySetCanceled(), pending))
+        {
+            return await pending.Completion.ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Synchronously enqueues an append, taking ownership of <paramref name="payload"/> (no copy), and
+    /// returns a task that completes with the assigned LSN once the record is durable and projected.
+    /// </summary>
+    /// <remarks>
+    /// Intended for the commit path: callers enqueue under their own ordering lock so that the LSN the
+    /// log assigns matches the caller's commit sequence, then await the returned task outside the lock
+    /// (keeping the <c>fsync</c> out of the critical section). The enqueue itself cannot be cancelled,
+    /// so a committed slot never leaves a gap in the LSN sequence.
+    /// </remarks>
+    internal Task<Lsn> EnqueueAppendOwned(LogRecordType type, byte[] payload) =>
+        EnqueueCore(type, payload).Completion;
+
+    private PendingAppend EnqueueCore(LogRecordType type, byte[] payload)
+    {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (_faultedWith is { } fault)
         {
@@ -126,19 +165,12 @@ public sealed class DurableLog : IAsyncDisposable
                 nameof(payload));
         }
 
-        // Copy the payload so the caller's buffer is not captured across the async boundary.
-        var copy = payload.ToArray();
-        var pending = new PendingAppend(type, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), copy);
-
+        var pending = new PendingAppend(type, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), payload);
         if (!_appendChannel.Writer.TryWrite(pending))
         {
             throw new ObjectDisposedException(nameof(DurableLog), "The durable log is closed.");
         }
-
-        using (cancellationToken.UnsafeRegister(static s => ((PendingAppend)s!).TrySetCanceled(), pending))
-        {
-            return await pending.Completion.ConfigureAwait(false);
-        }
+        return pending;
     }
 
     /// <summary>
@@ -443,8 +475,16 @@ public sealed class DurableLog : IAsyncDisposable
 
                     SignalTail();
 
+                    // Project each record (in LSN order) into derived state, then acknowledge it.
+                    // Acknowledging only after projection means a committer's AppendAsync returns with
+                    // its write already visible to readers (read-your-writes after commit).
                     foreach (PendingAppend p in batch)
                     {
+                        if (_onRecordDurable is not null)
+                        {
+                            var record = new LogRecord(p.AssignedLsn, p.Type, p.TimestampUnixMs, p.Payload);
+                            _onRecordDurable(record);
+                        }
                         p.TrySetResult();
                     }
                 }
@@ -631,16 +671,12 @@ public sealed class DurableLog : IAsyncDisposable
         public bool IsCancelled => _tcs.Task.IsCompleted;
         public Task<Lsn> Completion => _tcs.Task;
 
-        // The writer records the assigned LSN just before completing the batch.
-        private Lsn _assigned;
+        // The writer records the assigned LSN when the record is framed; see WriterLoopAsync.
+        public Lsn AssignedLsn { get; private set; }
 
-        public void TrySetResult()
-        {
-            // The LSN was captured when the record was framed; see WriterLoopAsync.
-            _tcs.TrySetResult(_assigned);
-        }
+        public void TrySetResult() => _tcs.TrySetResult(AssignedLsn);
 
-        public void SetAssigned(Lsn lsn) => _assigned = lsn;
+        public void SetAssigned(Lsn lsn) => AssignedLsn = lsn;
         public void TrySetException(Exception ex) => _tcs.TrySetException(ex);
         public void TrySetCanceled() => _tcs.TrySetCanceled();
     }

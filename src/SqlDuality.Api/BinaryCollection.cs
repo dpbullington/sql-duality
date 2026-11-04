@@ -42,7 +42,8 @@ public sealed class BinaryCollection
     {
         byte[] composite = CollectionKey.Encode(Name, key.Span);
         var mutations = new[] { Mutation.Put(composite, value) };
-        return _store.CommitAsync(mutations, _store.Snapshot(), cancellationToken);
+        // Blind, unconditional write (last-writer-wins): skip conflict detection with Lsn.Max.
+        return _store.CommitAsync(mutations, Lsn.Max, cancellationToken);
     }
 
     /// <summary>Deletes <paramref name="key"/> and returns the commit LSN.</summary>
@@ -50,7 +51,7 @@ public sealed class BinaryCollection
     {
         byte[] composite = CollectionKey.Encode(Name, key.Span);
         var mutations = new[] { Mutation.Delete(composite) };
-        return _store.CommitAsync(mutations, _store.Snapshot(), cancellationToken);
+        return _store.CommitAsync(mutations, Lsn.Max, cancellationToken);
     }
 
     // ----- Transaction-scoped operations -----
